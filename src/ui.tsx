@@ -13,6 +13,18 @@ import { useState, useEffect, useCallback, useRef } from 'preact/hooks'
 import mermaid from 'mermaid'
 import '!./output.css'
 
+/** 模糊匹配：query 的每个字符按顺序出现在 text 中即视为匹配 */
+function fuzzyMatch (query: string, text: string): boolean {
+  const q = query.toLowerCase().trim()
+  if (!q) return true
+  const t = text.toLowerCase()
+  let j = 0
+  for (let i = 0; i < t.length && j < q.length; i++) {
+    if (t[i] === q[j]) j++
+  }
+  return j === q.length
+}
+
 mermaid.initialize({
   startOnLoad: false,
   flowchart: { htmlLabels: false },
@@ -35,7 +47,15 @@ function Plugin (props: { editMermaidCode?: string }) {
   const [apiProvider, setApiProvider] = useState('openai')
   const [model, setModel] = useState('gpt-4o-mini')
   const [baseUrl, setBaseUrl] = useState('')
+  const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([])
+  const [openRouterModelsLoading, setOpenRouterModelsLoading] = useState(false)
+  const [openRouterModelsError, setOpenRouterModelsError] = useState<string | null>(null)
+  const [modelDropdownOpen, setModelDropdownOpen] = useState(false)
+  const [modelSearchQuery, setModelSearchQuery] = useState('')
+  const [testModelLoading, setTestModelLoading] = useState(false)
+  const [testModelResult, setTestModelResult] = useState<{ success?: boolean; error?: string } | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const modelDropdownRef = useRef<HTMLDivElement>(null)
 
   const renderMermaid = useCallback(async (code: string) => {
     if (!code.trim()) {
@@ -99,6 +119,52 @@ function Plugin (props: { editMermaidCode?: string }) {
     })
     return unsub
   }, [])
+
+  useEffect(() => {
+    const unsub = on('OPENROUTER_MODELS_RESULT', (payload: { models?: Array<{ id: string; name: string }>; error?: string }) => {
+      setOpenRouterModelsLoading(false)
+      if (payload.error) {
+        setOpenRouterModelsError(payload.error)
+        setOpenRouterModels([])
+        return
+      }
+      setOpenRouterModelsError(null)
+      if (payload.models) {
+        setOpenRouterModels(payload.models)
+      }
+    })
+    return unsub
+  }, [])
+
+  useEffect(() => {
+    const unsub = on('TEST_MODEL_RESULT', (payload: { success?: boolean; error?: string }) => {
+      setTestModelLoading(false)
+      setTestModelResult(payload.error ? { error: payload.error } : { success: true })
+    })
+    return unsub
+  }, [])
+
+  const handleTestModel = () => {
+    setTestModelResult(null)
+    setTestModelLoading(true)
+    emit('TEST_MODEL', {
+      apiKey,
+      apiProvider,
+      model,
+      baseUrl: apiProvider === 'custom' ? baseUrl : undefined
+    })
+  }
+
+  const handleFetchOpenRouterModels = () => {
+    if (!apiKey.trim()) return
+    setOpenRouterModelsLoading(true)
+    setOpenRouterModelsError(null)
+    emit('FETCH_OPENROUTER_MODELS', { apiKey: apiKey.trim() })
+  }
+
+  const filteredOpenRouterModels = openRouterModels.filter(
+    (m) => fuzzyMatch(modelSearchQuery, m.id) || fuzzyMatch(modelSearchQuery, m.name)
+  )
 
   const handleGenerate = () => {
     if (!description.trim()) {
@@ -258,18 +324,145 @@ function Plugin (props: { editMermaidCode?: string }) {
           </div>
           <div>
             <Text>模型</Text>
-            <input
-              type="text"
-              value={model}
-              onInput={(e) => setModel((e.target as HTMLInputElement).value)}
-              placeholder={apiProvider === 'openrouter' ? 'moonshotai/kimi-k2-thinking 或 openai/gpt-4o' : 'gpt-4o-mini'}
-              style={{
-                width: '100%',
-                padding: 8,
-                borderRadius: 6,
-                border: '1px solid var(--figma-color-border)'
-              }}
-            />
+            {apiProvider === 'openrouter' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {openRouterModels.length > 0 ? (
+                  <div ref={modelDropdownRef} style={{ position: 'relative' }}>
+                    <input
+                      type="text"
+                      value={modelDropdownOpen ? modelSearchQuery : model}
+                      onFocus={() => {
+                        setModelDropdownOpen(true)
+                        setModelSearchQuery(model)
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => {
+                          setModelDropdownOpen(false)
+                          setModelSearchQuery(model)
+                        }, 150)
+                      }}
+                      onInput={(e) => {
+                        const v = (e.target as HTMLInputElement).value
+                        setModelSearchQuery(v)
+                      }}
+                      placeholder="输入关键词搜索模型，如 kimi、gpt-4"
+                      style={{
+                        width: '100%',
+                        padding: 8,
+                        borderRadius: 6,
+                        border: '1px solid var(--figma-color-border)',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                    {modelDropdownOpen && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: 0,
+                          right: 0,
+                          top: '100%',
+                          marginTop: 4,
+                          maxHeight: 200,
+                          overflow: 'auto',
+                          background: 'var(--figma-color-bg)',
+                          border: '1px solid var(--figma-color-border)',
+                          borderRadius: 6,
+                          zIndex: 10,
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+                        }}
+                      >
+                        {filteredOpenRouterModels.length === 0 ? (
+                          <div style={{ padding: 12, color: 'var(--figma-color-text-tertiary)', fontSize: 12 }}>
+                            无匹配模型
+                          </div>
+                        ) : (
+                          filteredOpenRouterModels.slice(0, 100).map((m) => (
+                            <div
+                              key={m.id}
+                              role="option"
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                setModel(m.id)
+                                setModelSearchQuery(m.id)
+                                setModelDropdownOpen(false)
+                              }}
+                              style={{
+                                padding: '8px 12px',
+                                cursor: 'pointer',
+                                fontSize: 12,
+                                borderBottom: '1px solid var(--figma-color-border)',
+                                background: m.id === model ? 'var(--figma-color-bg-selected)' : undefined
+                              }}
+                            >
+                              <div style={{ fontWeight: 500 }}>{m.id}</div>
+                              {m.name !== m.id && (
+                                <div style={{ color: 'var(--figma-color-text-tertiary)', fontSize: 11 }}>{m.name}</div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <input
+                      type="text"
+                      value={model}
+                      onInput={(e) => setModel((e.target as HTMLInputElement).value)}
+                      placeholder="moonshotai/kimi-k2-thinking 或 openai/gpt-4o"
+                      style={{
+                        width: '100%',
+                        padding: 8,
+                        borderRadius: 6,
+                        border: '1px solid var(--figma-color-border)',
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                    <Button onClick={handleFetchOpenRouterModels} disabled={openRouterModelsLoading || !apiKey.trim()}>
+                      {openRouterModelsLoading ? (
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <LoadingIndicator />
+                          加载中...
+                        </span>
+                      ) : (
+                        '从 OpenRouter 加载模型列表'
+                      )}
+                    </Button>
+                    {openRouterModelsError && (
+                      <Text style={{ color: 'var(--figma-color-text-danger)', fontSize: 11 }}>
+                        {openRouterModelsError}
+                      </Text>
+                    )}
+                  </div>
+                )}
+                {openRouterModels.length > 0 && (
+                  <Button
+                    secondary
+                    onClick={() => {
+                      setOpenRouterModels([])
+                      setOpenRouterModelsError(null)
+                    }}
+                  >
+                    重新加载模型列表
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <input
+                type="text"
+                value={model}
+                onInput={(e) => setModel((e.target as HTMLInputElement).value)}
+                placeholder={apiProvider === 'gemini' ? 'gemini-2.0-flash' : 'gpt-4o-mini'}
+                style={{
+                  width: '100%',
+                  padding: 8,
+                  borderRadius: 6,
+                  border: '1px solid var(--figma-color-border)',
+                  boxSizing: 'border-box'
+                }}
+              />
+            )}
           </div>
           {apiProvider === 'custom' && (
             <div>
@@ -289,6 +482,39 @@ function Plugin (props: { editMermaidCode?: string }) {
             </div>
           )}
           <Button onClick={handleSaveSettings}>保存设置</Button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <Button
+              secondary
+              onClick={handleTestModel}
+              disabled={testModelLoading || !apiKey.trim()}
+            >
+              {testModelLoading ? (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <LoadingIndicator />
+                  测试中...
+                </span>
+              ) : (
+                '测试模型'
+              )}
+            </Button>
+            {testModelResult && (
+              <div
+                style={{
+                  fontSize: 12,
+                  padding: 8,
+                  borderRadius: 6,
+                  background: testModelResult.success
+                    ? 'var(--figma-color-bg-success-tertiary)'
+                    : 'var(--figma-color-bg-danger-tertiary)',
+                  color: testModelResult.success
+                    ? 'var(--figma-color-text-success)'
+                    : 'var(--figma-color-text-danger)'
+                }}
+              >
+                {testModelResult.success ? '连接成功，模型可用' : testModelResult.error}
+              </div>
+            )}
+          </div>
         </div>
       </Disclosure>
     </div>

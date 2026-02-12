@@ -7,7 +7,12 @@ import {
 } from '@create-figma-plugin/utilities'
 
 function registerHandlers() {
-  on('CREATE_MERMAID', async (description: string) => {
+  on('CREATE_MERMAID', async (description: unknown) => {
+    const desc = typeof description === 'string' ? description.trim() : ''
+    if (!desc) {
+      emit('MERMAID_RESULT', { error: '请先输入流程描述' })
+      return
+    }
     const settings = await loadSettingsAsync({ apiKey: '', apiProvider: 'openai', model: 'gpt-4o-mini', baseUrl: '' })
     const apiKey = settings?.apiKey as string | undefined
     const apiProvider = (settings?.apiProvider as string) || 'openai'
@@ -25,6 +30,7 @@ function registerHandlers() {
 只返回纯 Mermaid 代码，不要包含 markdown 代码块标记、解释或多余文字。
 优先使用 flowchart LR 或 flowchart TB。节点 ID 使用英文，标签可中英文。`
 
+    const requestStartTime = Date.now()
     try {
       const mermaidCode = await callLLM({
         apiKey,
@@ -32,7 +38,7 @@ function registerHandlers() {
         model,
         baseUrl,
         systemPrompt,
-        userPrompt: description
+        userPrompt: desc
       })
       emit('MERMAID_RESULT', { mermaidCode })
     } catch (err) {
@@ -56,12 +62,19 @@ function registerHandlers() {
       } else {
         message = '未知错误类型'
       }
-      
+
+      const elapsedMs = Date.now() - requestStartTime
       let userMsg = message
       if (message === 'Failed to fetch' || message.includes('Failed to fetch')) {
         userMsg = '网络请求失败。请检查：1) 是否使用「自定义端点」？若使用，需在 manifest 的 networkAccess 中添加该域名；2) 若在中国大陆，api.openai.com 可能被阻断，建议使用 OpenRouter 或配置代理。'
-      } else if ((err instanceof Error && err.name === 'AbortError') || message.toLowerCase().includes('abort')) {
-        userMsg = '请求超时（120 秒）。Kimi 等思考模型较慢，可缩短描述后重试。'
+      } else if (err instanceof Error && err.name === 'AbortError') {
+        if (elapsedMs < 10000) {
+          userMsg = '请求被中止（未发出或很快失败）。请检查：1) 网络是否可用；2) API Key 与模型是否正确；3) 若用代理/VPN 请确保 Figma 能访问 API 域名（如 openrouter.ai）。'
+        } else {
+          userMsg = '请求超时（120 秒）。Kimi 等思考模型较慢，可缩短描述后重试。'
+        }
+      } else if (message.toLowerCase().includes('abort')) {
+        userMsg = '请求被中止。请检查网络与 API 设置后重试。'
       }
       emit('MERMAID_RESULT', { error: userMsg })
     }
@@ -103,6 +116,58 @@ function registerHandlers() {
     const settings = await loadSettingsAsync({ apiKey: '', apiProvider: 'openai', model: 'gpt-4o-mini', baseUrl: '' })
     emit('SETTINGS_LOADED', settings || {})
   })
+
+  on('TEST_MODEL', async (payload: { apiKey: string; apiProvider: string; model: string; baseUrl?: string }) => {
+    const { apiKey, apiProvider, model, baseUrl } = payload || {}
+    if (!apiKey?.trim()) {
+      emit('TEST_MODEL_RESULT', { error: '请先填写 API Key' })
+      return
+    }
+    try {
+      await callLLM({
+        apiKey: apiKey.trim(),
+        apiProvider: apiProvider || 'openai',
+        model: model || 'gpt-4o-mini',
+        baseUrl: baseUrl?.trim() || undefined,
+        systemPrompt: 'You are a test. Reply with exactly: OK',
+        userPrompt: 'test'
+      }, 30000)
+      emit('TEST_MODEL_RESULT', { success: true })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      emit('TEST_MODEL_RESULT', { error: message })
+    }
+  })
+
+  on('FETCH_OPENROUTER_MODELS', async (payload: { apiKey: string }) => {
+    const apiKey = payload?.apiKey?.trim()
+    if (!apiKey) {
+      emit('OPENROUTER_MODELS_RESULT', { error: '请先填写 API Key' })
+      return
+    }
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/models', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` }
+      })
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as { error?: { message?: string } }
+        emit('OPENROUTER_MODELS_RESULT', {
+          error: err?.error?.message || `请求失败: ${response.status}`
+        })
+        return
+      }
+      const data = (await response.json()) as { data?: Array<{ id: string; name?: string }> }
+      const list = data.data || []
+      const models = list.map((m) => ({ id: m.id, name: m.name || m.id }))
+      emit('OPENROUTER_MODELS_RESULT', { models })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      emit('OPENROUTER_MODELS_RESULT', {
+        error: message === 'Failed to fetch' ? '网络请求失败，请检查网络' : message
+      })
+    }
+  })
 }
 
 export default function () {
@@ -141,11 +206,11 @@ async function callLLM(params: {
   baseUrl?: string
   systemPrompt: string
   userPrompt: string
-}): Promise<string> {
+}, timeoutMs = 120000): Promise<string> {
   const { apiKey, apiProvider, model, baseUrl, systemPrompt, userPrompt } = params
 
   if (apiProvider === 'gemini') {
-    return callGemini(apiKey, model, systemPrompt, userPrompt)
+    return callGemini(apiKey, model, systemPrompt, userPrompt, timeoutMs)
   }
 
   const url = apiProvider === 'custom' && baseUrl
@@ -173,16 +238,17 @@ async function callLLM(params: {
     headers['X-Title'] = 'Mermaid Flow Plugin'
   }
 
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 120000)
+  const hasAbort = typeof AbortController !== 'undefined'
+  const controller = hasAbort ? new AbortController() : null
+  const timeoutId = controller ? setTimeout(() => controller!.abort(), timeoutMs) : null
 
   const response = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify(body),
-    signal: controller.signal
+    ...(controller ? { signal: controller.signal } : {})
   })
-  clearTimeout(timeoutId)
+  if (timeoutId) clearTimeout(timeoutId)
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({})) as { error?: { message?: string } }
@@ -208,7 +274,8 @@ async function callGemini(
   apiKey: string,
   model: string,
   systemPrompt: string,
-  userPrompt: string
+  userPrompt: string,
+  timeoutMs = 120000
 ): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model || 'gemini-2.0-flash'}:generateContent?key=${apiKey}`
   const body = {
@@ -225,15 +292,16 @@ async function callGemini(
       maxOutputTokens: 2048
     }
   }
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 120000)
+  const hasAbort = typeof AbortController !== 'undefined'
+  const controller = hasAbort ? new AbortController() : null
+  const timeoutId = controller ? setTimeout(() => controller!.abort(), timeoutMs) : null
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: controller.signal
+    ...(controller ? { signal: controller.signal } : {})
   })
-  clearTimeout(timeoutId)
+  if (timeoutId) clearTimeout(timeoutId)
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({})) as { error?: { message?: string } }
