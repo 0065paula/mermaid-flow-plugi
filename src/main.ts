@@ -36,12 +36,32 @@ function registerHandlers() {
       })
       emit('MERMAID_RESULT', { mermaidCode })
     } catch (err) {
-      const message = err instanceof Error ? err.message : (typeof err === 'string' ? err : JSON.stringify(err))
-      let userMsg = String(message)
-      if (message === 'Failed to fetch' || (typeof message === 'string' && message.includes('Failed to fetch'))) {
+      // 改进错误处理：更完善的类型检查和错误信息提取
+      let message: string
+      if (err instanceof Error) {
+        message = err.message
+      } else if (typeof err === 'string') {
+        message = err
+      } else if (err && typeof err === 'object') {
+        // 尝试提取对象的所有属性，避免 JSON.stringify 返回 {}
+        try {
+          message = JSON.stringify(err, Object.getOwnPropertyNames(err))
+        } catch {
+          message = String(err)
+        }
+      } else if (err === null) {
+        message = '返回 null 错误'
+      } else if (err === undefined) {
+        message = '返回 undefined 错误'
+      } else {
+        message = '未知错误类型'
+      }
+      
+      let userMsg = message
+      if (message === 'Failed to fetch' || message.includes('Failed to fetch')) {
         userMsg = '网络请求失败。请检查：1) 是否使用「自定义端点」？若使用，需在 manifest 的 networkAccess 中添加该域名；2) 若在中国大陆，api.openai.com 可能被阻断，建议使用 OpenRouter 或配置代理。'
-      } else if ((err instanceof Error && err.name === 'AbortError') || (typeof message === 'string' && message.toLowerCase().includes('abort'))) {
-        userMsg = '请求超时（90 秒）。Kimi 等思考模型较慢，可缩短描述后重试。'
+      } else if ((err instanceof Error && err.name === 'AbortError') || message.toLowerCase().includes('abort')) {
+        userMsg = '请求超时（120 秒）。Kimi 等思考模型较慢，可缩短描述后重试。'
       }
       emit('MERMAID_RESULT', { error: userMsg })
     }

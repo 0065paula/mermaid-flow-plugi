@@ -111,16 +111,17 @@ function Plugin (props: { editMermaidCode?: string }) {
     setLoading(true)
     setError(null)
     emit('CREATE_MERMAID', description.trim())
+    // UI 超时设置为 90 秒，比 fetch 超时（120 秒）短，提前给用户反馈
     fallbackTimerRef.current = setTimeout(() => {
       setLoading((prev) => {
         if (prev) {
-          setError('超过 2 分钟未响应，请检查网络和 API Key 后重试')
+          setError('超过 90 秒未响应，请检查网络和 API Key 后重试')
           return false
         }
         return prev
       })
       fallbackTimerRef.current = null
-    }, 120000)
+    }, 90000)
   }
 
   const handleInsert = async () => {
