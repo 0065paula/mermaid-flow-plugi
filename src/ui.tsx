@@ -30,8 +30,20 @@ mermaid.initialize({
   flowchart: { htmlLabels: false },
   sequence: { useMaxWidth: true },
   securityLevel: 'loose',
-  theme: 'neutral'
+  theme: 'neutral',
+  themeVariables: {
+    fontFamily: 'arial, sans-serif'
+  }
 })
+
+/** 修复 Mermaid SVG 中的非法 font-family 属性（内嵌引号导致 XML 解析错误） */
+function sanitizeMermaidSvg(svg: string): string {
+  // 修复 font-family=""trebuchet ms",verdana,arial,sans-serif" 这类破损属性
+  return svg.replace(
+    /font-family\s*=\s*""([^"]*)"\s*,\s*([\s\S]*?)"\s*/gi,
+    (_, first: string, rest: string) => `font-family="'${first}',${rest.trim().replace(/\s+/g, ' ')}" `
+  )
+}
 
 let renderId = 0
 
@@ -56,6 +68,15 @@ function Plugin (props: { editMermaidCode?: string }) {
   const [testModelResult, setTestModelResult] = useState<{ success?: boolean; error?: string } | null>(null)
   const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const modelDropdownRef = useRef<HTMLDivElement>(null)
+  /** 当前预览对应的 Mermaid 代码（用于导出时补全节点文字，即使用户清空了输入框） */
+  const lastRenderedCodeRef = useRef<string>('')
+
+  const formatMermaidError = useCallback((message: string): string => {
+    const lineMatch = message.match(/line\s+(\d+)/i)
+    const lineHint = lineMatch ? `错误约在第 ${lineMatch[1]} 行。` : ''
+    const tip = '请检查：箭头与标签语法（如 →|文字|）、方括号是否成对、节点 ID 是否含非法字符。'
+    return lineHint + tip + '\n\n' + message
+  }, [])
 
   const renderMermaid = useCallback(async (code: string) => {
     if (!code.trim()) {
@@ -66,13 +87,15 @@ function Plugin (props: { editMermaidCode?: string }) {
     const id = `mermaid-${++renderId}`
     try {
       const { svg } = await mermaid.render(id, code)
-      setPreviewSvg(svg)
+      lastRenderedCodeRef.current = code
+      setPreviewSvg(sanitizeMermaidSvg(svg))
       setPreviewError(null)
     } catch (err) {
       setPreviewSvg(null)
-      setPreviewError(err instanceof Error ? err.message : String(err))
+      const raw = err instanceof Error ? err.message : String(err)
+      setPreviewError(formatMermaidError(raw))
     }
-  }, [])
+  }, [formatMermaidError])
 
   useEffect(() => {
     renderMermaid(mermaidCode)
@@ -144,6 +167,44 @@ function Plugin (props: { editMermaidCode?: string }) {
     return unsub
   }, [])
 
+  useEffect(() => {
+    const unsub = on('INSERT_ERROR', (payload: { error?: string }) => {
+      if (payload?.error) {
+        setError('插入失败：' + payload.error)
+      }
+    })
+    return unsub
+  }, [])
+
+  useEffect(() => {
+    const unsub = on('EXPORT_SVG_RESULT', (payload: { svg?: string; error?: string }) => {
+      if (payload?.error) {
+        setError('导出失败：' + payload.error)
+        return
+      }
+      if (payload?.svg) {
+        const blob = new Blob([payload.svg], { type: 'image/svg+xml' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `mermaid-diagram-${Date.now()}.svg`
+        a.click()
+        URL.revokeObjectURL(url)
+      }
+    })
+    return unsub
+  }, [])
+
+  const handleExportSvg = () => {
+    if (!previewSvg) {
+      setError('无法导出：预览未生成')
+      return
+    }
+    setError(null)
+    const codeForExport = mermaidCode.trim() || lastRenderedCodeRef.current || ''
+    emit('EXPORT_SVG', { svg: previewSvg, mermaidCode: codeForExport })
+  }
+
   const handleTestModel = () => {
     setTestModelResult(null)
     setTestModelLoading(true)
@@ -195,7 +256,8 @@ function Plugin (props: { editMermaidCode?: string }) {
       setError('无法插入：预览渲染失败')
       return
     }
-    emit('INSERT_SVG', { svg: previewSvg, mermaidCode })
+    const codeForInsert = mermaidCode.trim() || lastRenderedCodeRef.current || ''
+    emit('INSERT_SVG', { svg: previewSvg, mermaidCode: codeForInsert })
   }
 
   const handleCodeChange = (value: string) => {
@@ -271,7 +333,20 @@ function Plugin (props: { editMermaidCode?: string }) {
         }}
       >
         {previewError ? (
-          <Text style={{ color: 'var(--figma-color-text-danger)', fontSize: 12 }}>{previewError}</Text>
+          <div
+            style={{
+              color: 'var(--figma-color-text-danger)',
+              fontSize: 12,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: 200,
+              overflow: 'auto',
+              width: '100%',
+              textAlign: 'left'
+            }}
+          >
+            {previewError}
+          </div>
         ) : previewSvg ? (
           <div dangerouslySetInnerHTML={{ __html: previewSvg }} />
         ) : (
@@ -279,9 +354,14 @@ function Plugin (props: { editMermaidCode?: string }) {
         )}
       </div>
 
-      <Button onClick={handleInsert} disabled={!previewSvg}>
-        插入到画布
-      </Button>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <Button onClick={handleInsert} disabled={!previewSvg}>
+          插入到画布
+        </Button>
+        <Button secondary onClick={handleExportSvg} disabled={!previewSvg}>
+          导出 SVG
+        </Button>
+      </div>
 
       <VerticalSpace space="small" />
       <Disclosure

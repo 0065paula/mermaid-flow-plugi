@@ -24,7 +24,8 @@
   "figma-plugin": {
     "editorType": [
       "figma",
-      "figjam"
+      "figjam",
+      "dev"
     ],
     "networkAccess": {
       "allowedDomains": [

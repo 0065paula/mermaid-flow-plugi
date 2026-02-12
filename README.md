@@ -27,6 +27,8 @@
 
 **注意**：自定义端点需在 manifest 的 `networkAccess.allowedDomains` 中添加对应域名；发布版目前支持 OpenAI、OpenRouter、Google Gemini。
 
+更多细节（插件工作机制、端到端流程、完整系统提示词、SVG 兼容处理）见 **[docs/PLUGIN_MECHANISM.md](docs/PLUGIN_MECHANISM.md)**。
+
 ## Development guide
 
 *This plugin is built with [Create Figma Plugin](https://yuanqing.github.io/create-figma-plugin/).*
