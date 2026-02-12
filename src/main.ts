@@ -154,7 +154,7 @@ async function callLLM(params: {
   }
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 90000)
+  const timeoutId = setTimeout(() => controller.abort(), 120000)
 
   const response = await fetch(url, {
     method: 'POST',
@@ -166,7 +166,11 @@ async function callLLM(params: {
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({})) as { error?: { message?: string } }
-    throw new Error(err?.error?.message || `API 错误: ${response.status}`)
+    const msg = err?.error?.message || `API 错误: ${response.status}`
+    if (response.status === 504 || response.status === 408) {
+      throw new Error(`服务端超时 (${response.status})，请稍后重试`)
+    }
+    throw new Error(msg)
   }
 
   const data = (await response.json()) as {
@@ -202,7 +206,7 @@ async function callGemini(
     }
   }
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 90000)
+  const timeoutId = setTimeout(() => controller.abort(), 120000)
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

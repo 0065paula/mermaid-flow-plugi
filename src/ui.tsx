@@ -9,7 +9,7 @@ import {
 } from '@create-figma-plugin/ui'
 import { emit, on } from '@create-figma-plugin/utilities'
 import { h } from 'preact'
-import { useState, useEffect, useCallback } from 'preact/hooks'
+import { useState, useEffect, useCallback, useRef } from 'preact/hooks'
 import mermaid from 'mermaid'
 import '!./output.css'
 
@@ -35,6 +35,7 @@ function Plugin (props: { editMermaidCode?: string }) {
   const [apiProvider, setApiProvider] = useState('openai')
   const [model, setModel] = useState('gpt-4o-mini')
   const [baseUrl, setBaseUrl] = useState('')
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const renderMermaid = useCallback(async (code: string) => {
     if (!code.trim()) {
@@ -63,50 +64,63 @@ function Plugin (props: { editMermaidCode?: string }) {
     }
   }, [props.editMermaidCode])
 
-  on('MERMAID_RESULT', (payload: { mermaidCode?: string; error?: unknown }) => {
-    setLoading(false)
-    if (payload.error !== undefined && payload.error !== null) {
-      const errMsg = typeof payload.error === 'string'
-        ? payload.error
-        : payload.error instanceof Error
-          ? payload.error.message
-          : JSON.stringify(payload.error)
-      setError(errMsg)
-      return
-    }
-    if (payload.mermaidCode) {
-      setMermaidCode(payload.mermaidCode)
-      setError(null)
-    }
-  })
+  useEffect(() => {
+    const unsub = on('MERMAID_RESULT', (payload: { mermaidCode?: string; error?: unknown }) => {
+      if (fallbackTimerRef.current) {
+        clearTimeout(fallbackTimerRef.current)
+        fallbackTimerRef.current = null
+      }
+      setLoading(false)
+      if (payload.error !== undefined && payload.error !== null) {
+        const errMsg = typeof payload.error === 'string'
+          ? payload.error
+          : payload.error instanceof Error
+            ? payload.error.message
+            : JSON.stringify(payload.error)
+        setError(errMsg)
+        return
+      }
+      if (payload.mermaidCode) {
+        setMermaidCode(payload.mermaidCode)
+        setError(null)
+      }
+    })
+    return unsub
+  }, [])
 
-  on('SETTINGS_LOADED', (settings: Record<string, unknown> | undefined) => {
-    if (settings) {
-      setApiKey((settings.apiKey as string) || '')
-      setApiProvider((settings.apiProvider as string) || 'openai')
-      setModel((settings.model as string) || 'gpt-4o-mini')
-      setBaseUrl((settings.baseUrl as string) || '')
-    }
-  })
+  useEffect(() => {
+    const unsub = on('SETTINGS_LOADED', (settings: Record<string, unknown> | undefined) => {
+      if (settings) {
+        setApiKey((settings.apiKey as string) || '')
+        setApiProvider((settings.apiProvider as string) || 'openai')
+        setModel((settings.model as string) || 'gpt-4o-mini')
+        setBaseUrl((settings.baseUrl as string) || '')
+      }
+    })
+    return unsub
+  }, [])
 
   const handleGenerate = () => {
     if (!description.trim()) {
       setError('请输入流程描述')
       return
     }
+    if (fallbackTimerRef.current) {
+      clearTimeout(fallbackTimerRef.current)
+    }
     setLoading(true)
     setError(null)
     emit('CREATE_MERMAID', description.trim())
-    // UI 端兜底：若 95 秒未收到主线程回复则解除 loading
-    setTimeout(() => {
+    fallbackTimerRef.current = setTimeout(() => {
       setLoading((prev) => {
         if (prev) {
-          setError('请求超时或未响应，请检查网络和 API Key 后重试')
+          setError('超过 2 分钟未响应，请检查网络和 API Key 后重试')
           return false
         }
         return prev
       })
-    }, 95000)
+      fallbackTimerRef.current = null
+    }, 120000)
   }
 
   const handleInsert = async () => {
