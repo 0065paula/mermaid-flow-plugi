@@ -1,0 +1,50 @@
+{
+  "dependencies": {
+    "@create-figma-plugin/ui": "^4.0.3",
+    "@create-figma-plugin/utilities": "^4.0.3",
+    "mermaid": "^11.12.2",
+    "preact": ">=10"
+  },
+  "devDependencies": {
+    "@create-figma-plugin/build": "^4.0.3",
+    "@create-figma-plugin/tsconfig": "^4.0.3",
+    "@figma/plugin-typings": "1.79.0",
+    "concurrently": ">=8",
+    "tailwindcss": "^3.4.19",
+    "typescript": ">=4"
+  },
+  "scripts": {
+    "build": "npm run build:css && npm run build:js",
+    "build:css": "tailwindcss --input ./src/input.css --output ./src/output.css",
+    "build:js": "build-figma-plugin --typecheck --minify",
+    "watch": "npm run build:css && concurrently npm:watch:css npm:watch:js",
+    "watch:css": "tailwindcss --input ./src/input.css --output ./src/output.css --watch",
+    "watch:js": "build-figma-plugin --typecheck --watch"
+  },
+  "figma-plugin": {
+    "editorType": [
+      "figma",
+      "figjam"
+    ],
+    "networkAccess": {
+      "allowedDomains": [
+        "*"
+      ],
+      "reasoning": "调用 LLM API 将自然语言转换为 Mermaid 图表代码，支持 OpenAI、OpenRouter、Gemini 及用户自定义端点"
+    },
+    "id": "mermaid-flow-plugin",
+    "name": "Mermaid Flow Plugin",
+    "main": "src/main.ts",
+    "ui": "src/ui.tsx",
+    "relaunchButtons": {
+      "edit": {
+        "name": "编辑流程图",
+        "main": {
+          "src": "src/main.ts",
+          "handler": "edit"
+        },
+        "ui": "src/ui.tsx"
+      }
+    }
+  }
+}
